@@ -1,0 +1,212 @@
+# #####################
+# Model: x-vector based TS-VAD
+# Authors: Weiqing Wang
+# #####################
+
+# Basic parameters
+seed: 1994
+task: add_train
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+output_folder: !ref /home/zc114/workspace/speechbrain_PartialFake/ADD_2023/results/<seed>/<feature>_melnet_bdr/<wav_length>/<task>
+save_folder: !ref <output_folder>/save
+checkpoint_save_folder: !ref <save_folder>/checkpoints
+embedding_save_folder: !ref <save_folder>/embeddings
+train_log: !ref <output_folder>/train_log.txt
+
+# Feature parameters
+feature: wav2vec
+# These parameters won't be used when feture type is from pre-trained models, like wav2vec and wavLM
+preemph: 0.9
+n_fft: 400
+n_mels: 80
+####################
+
+sample_rate: 16000
+
+# embedding extraction
+in_planes: 32
+embedding_size: 128
+attention_window: 4
+# segmental pooling (SP) info
+sp_pooling_type: statistical
+seg_len: 1 # in frames of resnet output
+seg_shift: 1 
+
+# data parameters
+wav_length: 1.28
+wav_shift: !ref <wav_length> / 2
+subsampling: 2 # subsampling is 8 for ResNet
+time_resolution: !ref 0.01*<subsampling> # in seconds
+positive_ratio: 0.2 # factor for data balancing
+concat_ratio: 0.4 # factor for online concatenation 
+neighborhood_size: 2 # range of surrounding frames of waveform boundary that is set to True
+n_training_samples: 20480
+gradient_accumulation: 1
+gradient_clipping: 5.0
+
+# ###################### #
+# Data files preparation #
+# ###################### #
+device: 'cuda'
+# training
+add_train: /work/caizexin/ADD_2023/ADD2023_Track2_train/label.txt # label of training data
+add_dev: /work/caizexin/ADD_2023/ADD2023_Track2_dev/subset_label.txt # label of development data, for evaluation and model selection
+train_wav_folder: /work/caizexin/ADD_2023/ADD2023_Track2_train # directory of training set, must have a folder name 'wav' contatining the utterances written in the label.txt
+dev_wav_folder: /work/caizexin/ADD_2023/ADD2023_Track2_dev # directory of the development set
+
+# Augmentation
+rir_folder: /work/caizexin/ADD/RIRS_NOISES # where to store noisy +ris from open_rir # https://www.openslr.org/28/
+musan_folder: /work/caizexin/ADD/musan # e.g, /path/to/musan (download it from the web before) # https://www.openslr.org/17/
+speech_csv: !ref <musan_folder>/speech.csv
+music_csv: !ref <musan_folder>/music.csv
+noise_csv: !ref <musan_folder>/noise.csv
+
+# Training parameters
+n_epochs: 200 # stage two: train <front> + <back>
+batch_size: 64
+train_lr: 0.0001
+n_checkpoints: 10
+shuffle: True
+
+# Data augmentation
+add_noise_musan: !new:speechbrain.lobes.augment.EnvCorrupt
+    noise_csv: !ref <noise_csv>
+    babble_prob: 0.0
+    reverb_prob: 0.0
+    noise_prob: 1.0
+    noise_snr_low: 0
+    noise_snr_high: 15
+
+add_music_musan: !new:speechbrain.lobes.augment.EnvCorrupt
+    noise_csv: !ref <music_csv>
+    babble_prob: 0.0
+    reverb_prob: 0.0
+    noise_prob: 1.0
+    noise_snr_low: 0
+    noise_snr_high: 15
+
+add_speech_musan: !new:speechbrain.lobes.augment.EnvCorrupt
+    noise_csv: !ref <speech_csv>
+    babble_prob: 0.0
+    reverb_prob: 0.0
+    noise_prob: 1.0
+    noise_snr_low: 0
+    noise_snr_high: 15
+
+add_rev: !new:speechbrain.lobes.augment.EnvCorrupt
+    openrir_folder: !ref <rir_folder>
+    openrir_max_noise_len: !ref <wav_length>  # seconds
+    reverb_prob: 0.8
+    noise_prob: 0.0
+    noise_snr_low: 0
+    noise_snr_high: 20
+    rir_scale_factor: 1.0
+
+add_noise: !new:speechbrain.lobes.augment.EnvCorrupt
+    openrir_folder: !ref <rir_folder>
+    openrir_max_noise_len: !ref <wav_length>  # seconds
+    reverb_prob: 0.0
+    noise_prob: 0.8
+    noise_snr_low: 0
+    noise_snr_high: 20
+    rir_scale_factor: 1.0
+
+add_rev_noise: !new:speechbrain.lobes.augment.EnvCorrupt
+    openrir_folder: !ref <rir_folder>
+    openrir_max_noise_len: !ref <wav_length>  # seconds
+    reverb_prob: 0.8
+    noise_prob: 0.8
+    noise_snr_low: 0
+    noise_snr_high: 20
+    rir_scale_factor: 1.0
+
+augment_pipeline: [
+    !ref <add_speech_musan>,
+    !ref <add_noise_musan>,
+    !ref <add_music_musan>,
+    !ref <add_rev>,
+    !ref <add_noise>,
+    !ref <add_rev_noise>
+] # we only select one of the augmentations
+
+train_dataloader_options:
+    batch_size: !ref <batch_size>
+    shuffle: True
+    num_workers: 8
+
+valid_dataloader_options:
+    batch_size: 1
+    shuffle: False
+
+# Functions
+compute_fbank: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+    deltas: True
+
+compute_stft: !new:speechbrain.processing.features.STFT
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+
+# https://huggingface.co/facebook/wav2vec2-base-960h
+# for the first time, you can use HuggingFaceWav2Vec2 to download the model
+freeze_wav2vec: False
+wav2vec: !new:speechbrain.lobes.models.huggingface_wav2vec.HuggingFaceWav2Vec2
+   source: /home/zc114/workspace/speechbrain/recipes/ADD/paper/pre_trained_mdls/wav2vec2-base-960h # path to the model
+   output_norm: True
+   freeze: !ref <freeze_wav2vec>
+   save_path: !ref <save_folder>/wav2vec2_checkpoint
+
+front: !new:speechbrain.nnet.containers.Sequential
+    melnet: !new:speechbrain.lobes.models.ResNet.MelResNet.MelResNet 
+        in_planes: 768
+        planes: 512
+        embed_dim: !ref <embedding_size>
+        res_blocks: 12
+    linear: !new:torch.nn.Linear 
+        in_features: !ref <embedding_size>
+        out_features: !ref <embedding_size>
+    norm: !new:speechbrain.nnet.normalization.BatchNorm1d
+        input_size: !ref <embedding_size>
+
+back: !new:speechbrain.lobes.models.diarization.EEND.EEND_TransformerEncoder
+    num_layers: 2
+    nhead: 4
+    d_ffn: 1024
+    d_model: !ref <embedding_size>
+    dropout: 0.5
+    n_spk: 1
+
+epoch_counter: !new:speechbrain.utils.epoch_loop.EpochCounter
+    limit: !ref <n_epochs>
+
+modules: 
+    wav2vec: !ref <wav2vec>
+    front: !ref <front>
+    back: !ref <back>
+
+compute_cost: !new:torch.nn.BCEWithLogitsLoss
+
+opt_class: !name:torch.optim.Adam
+    lr: !ref <train_lr>
+    weight_decay: 0.000002
+
+noam_annealing: !new:speechbrain.nnet.schedulers.NoamScheduler
+    lr_initial: !ref <train_lr>
+    n_warmup_steps: 1600
+
+# Logging + checkpoints
+train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
+    save_file: !ref <train_log>
+
+error_stats: !name:speechbrain.utils.metric_stats.BinaryMetricStats
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <checkpoint_save_folder>
+    recoverables:
+        wav2vec: !ref <wav2vec>
+        front: !ref <front>
+        back: !ref <back>
+        counter: !ref <epoch_counter>
+

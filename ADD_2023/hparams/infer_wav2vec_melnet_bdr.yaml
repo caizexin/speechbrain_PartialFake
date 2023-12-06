@@ -1,0 +1,118 @@
+# #####################
+# Model: x-vector based TS-VAD
+# Authors: Weiqing Wang
+# #####################
+
+# Basic parameters
+seed: 1994
+task: add_train
+__set_seed: !apply:torch.manual_seed [!ref <seed>]
+output_folder: !ref /home/zc114/workspace/speechbrain_PartialFake/ADD_2023/results/<seed>/<feature>_melnet_bdr/<wav_length>/<task>
+save_folder: !ref <output_folder>/save
+checkpoint_save_folder: !ref <save_folder>/checkpoints
+embedding_save_folder: !ref <save_folder>/embeddings
+inference_save_folder: !ref <save_folder>/inference_test
+train_log: !ref <output_folder>/train_log.txt
+
+# infer chunks
+i_chunks: 0
+n_chunks: 1
+
+# adapt set
+dev_wav_folder: /work/caizexin/ADD_2023/ADD2023_Track2_dev # path to the develpment set
+add_dev: /work/caizexin/ADD_2023/ADD2023_Track2_dev/label.txt # path to the label file
+test_wav_folder: /work/caizexin/ADD_2023/ADD2023_Track2_test # path to the test set
+add_test: /work/caizexin/ADD_2023/ADD2023_Track2_test/wavlist # path to the wavlist
+# Feature parameters
+feature: wav2vec # energy or phase
+preemph: 0.9
+n_fft: 400
+n_mels: 80
+sample_rate: 16000
+
+# embedding extraction
+in_planes: 32
+embedding_size: 128
+attention_window: 4
+# segmental pooling (SP) info
+sp_pooling_type: statistical
+seg_len: 1 # in frames of resnet output
+seg_shift: 1 
+# data parameters
+wav_length: 1.28
+wav_shift: !ref <wav_length> / 2
+subsampling: 2 # subsampling is 8 for ResNet, 1 for cnn
+time_resolution: !ref 0.01*<subsampling> # in seconds
+positive_ratio: 0.2
+neighborhood_size: 2
+training_samples: 20480
+gradient_accumulation: 1
+gradient_clipping: 5.0
+
+# ###################### #
+# Data files preparation #
+# ###################### #
+device: 'cuda'
+
+# Training parameters
+n_epochs: 200 # stage two: train <front> + <back>
+batch_size: 1
+train_lr: 0.0001
+n_checkpoints: 5
+shuffle: True
+
+add_noise: !new:speechbrain.processing.speech_augmentation.AddNoise
+    snr_low: 15
+    snr_high: 15
+
+dataloader_options:
+    batch_size: !ref <batch_size>
+    shuffle: False
+    num_workers: 16
+# Functions
+compute_fbank: !new:speechbrain.lobes.features.Fbank
+    sample_rate: !ref <sample_rate>
+    n_fft: !ref <n_fft>
+    n_mels: !ref <n_mels>
+    deltas: True
+
+freeze_wav2vec: False
+wav2vec: !new:speechbrain.lobes.models.huggingface_wav2vec.HuggingFaceWav2Vec2
+   source: /home/zc114/workspace/speechbrain/recipes/ADD/paper/pre_trained_mdls/wav2vec2-base-960h
+   output_norm: True
+   freeze: !ref <freeze_wav2vec>
+   save_path: !ref <save_folder>/wav2vec2_checkpoint
+
+front: !new:speechbrain.nnet.containers.Sequential
+    # input_shape: [null, 1, !ref <n_mels>, null] # B x 1 x n_mels x T
+    melnet: !new:speechbrain.lobes.models.ResNet.MelResNet.MelResNet # B x 256 x n_mels/8 x T/8
+        in_planes: 768
+        planes: 512
+        embed_dim: !ref <embedding_size>
+        res_blocks: 12
+    linear: !new:torch.nn.Linear # B x n_seg x embd_size
+        in_features: !ref <embedding_size>
+        out_features: !ref <embedding_size>
+    norm: !new:speechbrain.nnet.normalization.BatchNorm1d
+        input_size: !ref <embedding_size>
+
+back: !new:speechbrain.lobes.models.diarization.EEND.EEND_TransformerEncoder
+    num_layers: 2
+    nhead: 4
+    d_ffn: 1024
+    d_model: !ref <embedding_size>
+    dropout: 0.5
+    n_spk: 1
+
+modules: 
+    wav2vec: !ref <wav2vec>
+    back: !ref <back>
+    front: !ref <front>
+
+checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
+    checkpoints_dir: !ref <checkpoint_save_folder>
+    recoverables:
+        front: !ref <front>
+        back: !ref <back>
+        wav2vec: !ref <wav2vec>
+
